@@ -10,9 +10,9 @@
 
 EXAMPLES
 
-     ./shp2grid input.shp -o output.nc -s 10,5 --bbox -90.,-60.,90.,60.
-     ./shp2grid input.shp -o output.nc -r 3.75,1.9 -g --bbox 0,,360,
-     ./shp2grid input.shp -o output.nc -m grid.nc,lon,lat,lon_bnds,lat_bnds
+     ./shp2grid input.shp -o output.nc --size 10,5 --bbox -90.,-60.,90.,60.
+     ./shp2grid input.shp -o output.nc --res 3.75,1.9 --bbox 0,,360, -g
+     ./shp2grid input.shp -o output.nc --match grid.nc,lon,lat,lon_bnds,lat_bnds
      ./shp2grid input.shp -o output.nc -s 96 -g -f
 
 
