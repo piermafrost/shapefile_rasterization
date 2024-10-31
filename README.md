@@ -20,7 +20,7 @@ The main programs use the following modules:
 * data\_example/: shapefiles for testing
 
 ## Required libraries
-The main program (shp2grid) need the netcdf-fortran library (https://docs.unidata.ucar.edu/netcdf-fortran/current/index.html).  
+The main program (shp2grid) needs the netcdf-fortran library (https://docs.unidata.ucar.edu/netcdf-fortran/current/index.html).  
 On Linux operating systems: `apt install libnetcdff`.
 
 Because I couldn't find a Fortran shapefile library, I wrote my own module to read shapefile data from binary files \*.shx
