@@ -1,0 +1,166 @@
+# This is a makefile for fortran using the gofrtran or ifort compiler
+# 
+# This makefile includes one optional argument variable: MODE, defining the compilation model
+# By default, MODE = standard, but two other modes can be specified while calling make: "debug" and "optim"
+#     make MODE=standard    (equivalent to just "make")
+#     make MODE=optim       (for fast use)
+#     make MODE=debug       (extra debugging options)
+# 
+# WARNING: ALL FILES SHOULD HAVE THE SAME EXTENSION (SPECIFIED BY THE VARIABLE `ext')
+
+
+
+
+# Compililation mode:
+MODE ?= standard
+
+
+# Use netCDF library:
+USE_NETCDF ?= yes
+
+
+# Macros:
+FC ?= gfortran
+DUMMYFC = $(FC)
+# If you directly do `ifeq ($(FC), gfortran)', for some osbcure reasons, it doesn't work. Whereas `ifeq ($(DUMMYFC), gfortran)' works.
+
+
+# compiler-dependent flags:
+
+                            ##########################
+ifeq ($(DUMMYFC), gfortran) # GNU compiler: gfortran #
+                            ##########################
+
+        # Fortran language options:
+        #lang_flags = -ffree-form -std=f95
+        #lang_flags = -ffree-form -std=f2003 # some syntax of my programs are not legal in fortran 95 standard
+        #lang_flags = -ffree-form -std=f2008 # use integer kind
+        lang_flags = -ffree-form -std=gnu # allow all fortran standards + extensions, such as endianness conversion
+
+        # Error and warning options:
+        ifeq ($(MODE), debug)
+                warn_flags = -pedantic-errors -Wall -Wconversion-extra -Wimplicit-interface -Wunderflow -Wextra -Wunreachable-code
+        else
+                warn_flags = -Wpedantic -Waliasing -Wampersand -Wline-truncation -Wcharacter-truncation -Wtabs -Wconversion -Wimplicit-interface -Wimplicit-procedure -Wunderflow -Wunused-dummy-argument -Wunused -Wunreachable-code
+        endif
+
+        # Debugging options:
+        ifneq ($(MODE), optim)
+                debug_flags = -ffpe-trap=invalid,zero,overflow,underflow -g3
+        endif
+
+        # Code generation options:
+        ifneq ($(MODE), optim)
+                code_flags = -fbounds-check
+        endif
+
+        # Optimization options:
+        ifeq ($(MODE), debug)
+                optim_flags = -O0 -fstack-protector-all
+        endif
+        ifeq ($(MODE), optim)
+                optim_flags = -O3
+        endif
+        # if none of previous: assume standard mode:
+        optim_flags ?= -O1
+
+endif
+
+                         #########################
+ifeq ($(DUMMYFC), ifort) # Intel compiler: ifort #
+                         #########################
+
+        # Fortran langauge options:
+        lang_flags = -free -132
+
+        # Error and warning options (these are the ones I think necessary, some of them are already set by default):
+        ifeq ($(MODE), debug)
+                warn_flags = -warn all
+        else
+                warn_flags = -warn general,usage,declaration,unused,truncated_source,interfaces,ignore_loc
+        endif
+
+        # Debugging options:
+        ifeq ($(MODE), debug)
+                debug_flags = -debug full
+        endif
+
+        # Options at run time
+        ifeq ($(MODE), debug)
+                code_flags = -check all -fp-stack-check -traceback
+        endif
+
+        # Optimization options:
+        ifeq ($(MODE), debug)
+                optim_flags = -O0 -fstack-protector-all -fstack-security-check
+        endif
+        ifeq ($(MODE), optim)
+                optim_flags = -Ofast
+        endif
+        # if none of previous: assume standard mode:
+        optim_flags ?= -O1
+
+endif
+
+
+
+########################
+# LIBRARY and INCLUDE: #
+########################
+
+
+# NetCDF library:
+ncpath = /usr
+ifeq ($(USE_NETCDF), yes)
+        inc_flags += -I$(ncpath)/include
+        lib_flags += -L$(ncpath)/lib
+        netcdf_flags = -lnetcdf -lnetcdff
+endif
+
+
+
+FFLAGS = $(lang_flags) $(warn_flags) $(debug_flags) $(code_flags) $(optim_flags) $(inc_flags) $(lib_flags) $(netcdf_flags)
+
+
+#############################################################################
+
+ext = f90
+
+
+# Specific executable making rule:
+read_shapefile_program: read_shapefile_program.o shapefile_io_module.o
+	$(FC) $^ -o $@ $(FFLAGS)
+
+shp2grid: shp2grid.o shp2grid_functions.o shapefile_io_module.o netcdf_output.o geography.o miscellaneous_functions.o scan_arguments.o input_name_functions.o
+	$(FC) $^ -o $@ $(FFLAGS)
+
+
+# General executable making rule:
+%: %.$(ext)
+	$(FC) $^ -o $@ $(FFLAGS)
+
+# General object making rule
+%.o: %.$(ext)
+	$(FC) -c $< -o $@ $(FFLAGS)
+
+
+
+# Additional dependencies
+
+read_shapefile_program.o: shapefile_io_module.o
+netcdf_output.o: geography.o miscellaneous_functions.o
+shp2grid_functions.o: geography.o
+shp2grid.o: shp2grid_functions.o shapefile_io_module.o netcdf_output.o geography.o miscellaneous_functions.o scan_arguments.o input_name_functions.o
+
+
+
+#############################################################################
+
+
+check:
+	@echo "$(FC) $(FFLAGS)"
+
+.PHONY: clean clc
+
+clean:
+	rm -f *.o *.mod

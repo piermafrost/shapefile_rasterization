@@ -1,0 +1,899 @@
+program shp2grid
+
+use scan_arguments_mod, only: scan_arguments
+use input_name_functions, only: remove_extension
+use shapefile_io_module, only: read_shapefile
+use netcdf_output, only: create_output_file, write_output, write_output_slice, close_file
+use geography, only: get_earth_parameters, authalic_latitude, authalic_radius
+use shp2grid_functions, only: define_grid, get_pos, segment_area, close_cell_ring, record_border_in, record_border_out, &
+                              reinitialize_border, get_connected_points, fill_polygon_interior
+implicit none
+
+
+! Input file name:
+!input_file = 'test4'
+!input_file = '/home/piermafrost/data/GSHHS_shp/c/GSHHS_c_L1'
+!input_file = '/home/piermafrost/data/shoreline_custom/shoreline_with_main_endhoreic_water_bodies'
+!input_file = '/home/piermafrost/data/GSHHS_shp/f/GSHHS_f_L1'
+!input_file = '/home/piermafrost/data/litho_Hartmann2012/split_litho/LiMW_shapefile_xx_su'
+!input_file = '/home/piermafrost/data/erosion/erosion_database'
+
+
+!!!!!!!!!! PARAMETERS: !!!!!!!!!!
+
+double precision, parameter:: DEG2RAD = acos(-1d0)/180d0 ! PI/180
+double precision, parameter:: DEFAULT_TOLERANCE = 10*epsilon(1d0)
+character(len=*), parameter:: DEFAULT_EARTH_MODEL = 'WGS84'
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+double precision, dimension(:,:),   allocatable:: grid_area, polygon_area, polygon_area_sum
+double precision, dimension(:,:),   allocatable:: polygon, polygon2
+double precision, dimension(:,:,:), allocatable:: last_border_pos
+double precision, dimension(:),     allocatable:: lon, lat, lonbnd, latbnd, xbnd, ybnd
+double precision, dimension(:,:),   allocatable:: xyadd
+double precision, dimension(:),     allocatable:: xadd, yadd, xaddtiming, yaddtiming
+logical, dimension(:,:,:),          allocatable:: is_last_border_out
+logical, dimension(:,:),            allocatable:: visited, connected
+integer, dimension(:,:),            allocatable:: list_visited, list_connected
+integer, dimension(:,:),            allocatable:: ijadd
+integer, dimension(:),              allocatable:: recpos, recpos_in_part, npoints, nparts, partpos, partlen
+integer:: nvisited, nconnected
+
+double precision:: y0, x1, y1, x2, y2, x2_add, y2_add, xin, yin, area, recarea, rastarea, totarea, totrastarea
+double precision, dimension(4):: bbox, grid_bbox
+integer:: i, j, k0, k, n, iadd, jadd, kadd, naddi, naddj, nadd, di, dj, dj0, irec, ipart, npts, nrec, listsize
+integer:: ofid, ovarid
+logical:: goon
+
+! Arguments and options
+integer:: nx, ny
+character(len=200):: input_file, output_file
+character(len=30):: earth_model
+double precision:: dlon, dlat, radius, authradius, flat, ecc, tolerance
+logical:: check_tot_area, check_rec_area, area_fract, use_shp_bbox, split_records, split_computation, split_connected_computation, &
+          check, split, print_progress
+
+! Variables for subdivision in N task, print on screen when each task in completed
+integer, parameter:: NTASK = 132
+integer, dimension(NTASK+1):: list_task
+integer:: itask
+character(len=6):: barformat
+character(len=NTASK) barprogress
+
+! Variables concerning user options
+integer, parameter:: NOPT = 16, NREQARG_MAX = 4
+character(len=30), dimension(NOPT):: options
+integer, dimension(NOPT)::           nreqarg
+character(len=200), dimension(NOPT,NREQARG_MAX):: opt_arg
+logical, dimension(NOPT):: got_opt
+! Variables concerning mandatory arguments
+integer, parameter:: NARG = 1
+character(len=200), dimension(NARG):: list_arg
+
+
+
+
+!##############################################################################################################################!
+!=========================        list of programs options the user may pass to the executable:        ========================!
+!
+options(1)  = '-o' ! -o output_file_name
+nreqarg(1)  = 1
+!
+options(2)  = '-s' ! n m
+nreqarg(2)  = 2
+!
+options(3)  = '--res' ! --res dx dy
+nreqarg(3)  = 2
+!
+options(4)  = '--match' ! file_name
+nreqarg(4)  = 1
+!
+options(5) = '--bbox' ! --bbox x0 y0 x1 y1
+nreqarg(5) = 4
+!
+options(6)  = '--shp-bbox'
+nreqarg(6)  = 0
+!
+options(7)  = '--fraction'
+nreqarg(7)  = 0
+!
+options(8)  = '--earth-model' ! --earth-model model_name
+nreqarg(8)  = 1
+!
+options(9)  = '--earth-flattening' ! --earth-flattening x
+nreqarg(9)  = 1
+!
+options(10) = '--earth-radius' ! --earth-radius x
+nreqarg(10) = 1
+!
+options(11) = '--check-tot-area'
+nreqarg(11) = 0
+!
+options(12) = '--check-rec-area'
+nreqarg(12) = 0
+!
+options(13) = '--protect-adjacent'
+nreqarg(13) = 0
+!
+options(14) = '--split-records'
+nreqarg(14) = 0
+!
+options(15) = '--split-computation'
+nreqarg(15) = 0
+!
+options(16) = '--tolerance' ! --tolerance x
+nreqarg(16) = 1
+!
+!==============================================================================================================================!
+!##############################################################################################################################!
+
+
+
+
+! Display of progress bar:
+write(barformat, fmt='(A2,I3.3,A1)') '(A',NTASK,')'
+barprogress = ''
+barprogress(1:4) = '| 0%'
+barprogress(NTASK-5:NTASK) = '100% |'
+
+
+
+
+!##############################################################################################################################!
+!==============================================================================================================================!
+!=========================               Get options passed to the program by the user                =========================!
+!==============================================================================================================================!
+!##############################################################################################################################!
+
+
+print *
+
+call scan_arguments( list_arg, list_arg_name=(/'input file name'/), &
+                        list_legal_opt=options, list_expected_n_optarg=nreqarg, list_optarg=opt_arg, got_opt=got_opt, &
+                        inquire_missing_arg=.true. )
+
+
+! Input file
+input_file = list_arg(1)
+call remove_extension(input_file, list_ext=(/'.shp', '.shx', '.dbf', '.prj'/))
+
+! Output file
+if (got_opt(1)) then
+    output_file = opt_arg(1,1)
+else
+    output_file = trim(input_file)//'_rasterized.nc'
+end if
+
+nx = -1
+ny = -1
+dlon = -1d99
+dlat = -1d99
+
+! Grid size
+if (got_opt(2)) then
+    read(opt_arg(2,1), fmt=*) nx
+    read(opt_arg(2,2), fmt=*) ny
+
+! Grid Resolution
+elseif (got_opt(3)) then
+    read(opt_arg(3,1), fmt=*) dlon
+    read(opt_arg(3,2), fmt=*) dlat
+end if
+
+! match grid from another netCDF File
+if (got_opt(4)) then
+    print *, '"--match": Option not yet implemented.'
+    stop
+    ! read netCDF file
+    !nx =
+    !ny =
+    !allocate(lon(nx))
+    !allocate(lat(ny))
+    !lon =
+    !lat =
+end if
+
+! Bounding-box
+if (got_opt(5)) then
+    do k = 1,4
+        read(opt_arg(5,k), fmt=*) grid_bbox(k)
+    end do
+
+! Use input shapefile bounding-box
+else
+    use_shp_bbox = got_opt(6)
+end if
+
+! Write polygon area in grid cell or polygon fraction of grid cell
+area_fract = got_opt(7)
+
+! Earth model
+if (got_opt(8)) then
+    read(opt_arg(8,1), fmt=*) earth_model
+else
+
+    if (got_opt(9) .and. got_opt(10)) then
+
+! Earth flattening
+        read(opt_arg(9,1), fmt=*) flat
+
+! Earth radius
+        read(opt_arg(10,1), fmt=*) radius
+
+        earth_model = 'custom'
+
+    else
+        earth_model = DEFAULT_EARTH_MODEL
+    end if
+end if
+
+! Check the total area (sum of all records)
+check_tot_area = got_opt(11)
+
+! Check the area of each record
+check_rec_area = got_opt(12)
+
+! Split computation of connected points avoid errors with adjactent polygons
+split_connected_computation = got_opt(13)
+
+! Write each record separately
+split_records = got_opt(14)
+
+! Process each record independently, and sum all the areas at the end
+split_computation = got_opt(15)
+
+! Tolerance (minimum distance for a point to be considered as not in a cell corner)
+if (got_opt(16)) then
+    read(opt_arg(16,1), fmt=*) tolerance
+else
+    tolerance = DEFAULT_TOLERANCE
+end if
+
+
+check = check_tot_area .or. check_rec_area
+split = split_records .or. split_computation
+print_progress = (.not. split) .or. (.not. check_rec_area)
+
+
+
+
+!##############################################################################################################################!
+!==============================================================================================================================!
+!=========================                   load input file / create output file                     =========================!
+!==============================================================================================================================!
+!##############################################################################################################################!
+
+
+if (earth_model/='custom') then
+    call get_earth_parameters(earth_model, radius=radius, eccentricity=ecc)
+end if
+
+
+! Load input shapefile
+! --------------------
+
+call read_shapefile(input_file, nrec, npoints, nparts, recpos, recpos_in_part, partpos, partlen, polygon, bbox)
+
+! Bounding box:
+if (use_shp_bbox) then
+
+    if (nx/=-1 .and. ny/=-1) then
+        grid_bbox = bbox
+    elseif (dlon/=-1d99 .and. dlat/=-1d99) then
+        grid_bbox = (/ floor(bbox(1)/dlon-1)*dlon, floor(bbox(2)/dlat-1)*dlat, &
+                       ceiling(bbox(3)/dlon+1)*dlon, ceiling(bbox(4)/dlat+1)*dlat /)
+    else
+        print *, 'Error: not enough information about the grid. Grid resolution (--res) or grid size (-s) are needed'
+        print *, 'Program stopped'
+        stop
+    end if
+
+else
+
+    if (bbox(1)<grid_bbox(1) .or. bbox(2)<grid_bbox(2) .or. bbox(3)>grid_bbox(3) .or. bbox(4)>grid_bbox(4)) then
+        print *, 'ERROR: Shapefile bounding-box exceeds current grid'
+        print *, 'Shapefile bbox:', bbox
+        print *, 'Grid bbox:     ', grid_bbox
+        print *, 'Program stopped'
+        stop
+    end if
+
+end if
+
+
+print *
+print *, 'Pre-computation...'
+
+! degree -> radian conversion:
+polygon = DEG2RAD*polygon
+
+! conversion in authalic latitude:
+call authalic_latitude(polygon(2,:) , ecc)
+authradius = authalic_radius(radius, ecc)
+
+
+! Grid definition and initialize polygon area (if global grid or if put all records in the same file):
+call define_grid(grid_bbox, nx, ny, dlon, dlat, authradius, ecc, lon, lat, lonbnd, latbnd, xbnd, ybnd, grid_area, polygon_area)
+
+
+! Allocation
+listsize = min( nx*ny , int(10*sqrt(real(nx*ny))) )
+allocate( polygon2(2,maxval(partlen)) )
+allocate(       list_visited(2,nx*ny) )
+allocate(     list_connected(2,nx*ny) )
+allocate(            visited(nx,ny)   ) 
+allocate(          connected(nx,ny)   ) 
+allocate(    last_border_pos(4,nx,ny) )
+allocate( is_last_border_out(4,nx,ny) )
+allocate(      ijadd(2,2*listsize) )
+allocate(      xyadd(2,2*listsize) )
+allocate(       xadd(listsize)   )
+allocate( xaddtiming(listsize)   )
+allocate(       yadd(listsize)   )
+allocate( yaddtiming(listsize)   )
+if (split_computation) then
+    allocate( polygon_area_sum(nx,ny) )
+    polygon_area_sum = 0d0
+end if
+
+
+
+! Create output file
+! ------------------
+
+if (split_records) then
+    call create_output_file(output_file, lon, lat, lonbnd, latbnd, ofid, ovarid, nrec=nrec, &
+                            earth_model=earth_model, grid_area=grid_area, area_fraction=area_fract, ifname=input_file)
+else
+    call create_output_file(output_file, lon, lat, lonbnd, latbnd, ofid, ovarid, &
+                            earth_model=earth_model, grid_area=grid_area, area_fraction=area_fract, ifname=input_file)
+end if
+
+
+
+
+!##############################################################################################################################!
+!==============================================================================================================================!
+!=========================                                 Computation                                =========================!
+!==============================================================================================================================!
+!##############################################################################################################################!
+
+
+
+print *
+print *, 'Computation...'
+
+
+!===========================================================!
+! - - - - - - - - - -  initialisation:  - - - - - - - - - - !
+
+nvisited = 0
+nconnected = 0
+
+! "list_visited" contains {i,j} positions in of visited points (shape of "list_visited": (npoints,2))
+! "nvisited" is the number of visited points
+
+visited = .false.
+!       "visited(i,j)" [logical] tells if the point {i,j} have been visited
+
+connected = .false.
+
+last_border_pos = -9d+99
+!       contains the position on a cell edge of the right-most (looking from outside the cell) entry/exist point
+!       ** A border (or edge) is considered empty is its right-most point position is -9d+99 **
+
+! "is_last_border_out" tells if the the point of each edge of each cell is an exit point (= .true.) or an entry point
+! (= .false.) 
+
+!  "last_border_pos" and "is_last_border_out" have the shape (4,nx,ny)
+!  1st dimension: cell edges: 1: left, 2: up, 3: right, 4: down
+
+! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - !
+!===========================================================!
+
+
+! Subdivision in NTASK groups:
+list_task = (/ ((k*nrec)/NTASK, k = 0,NTASK) /)
+! make sure not to miss any record:
+list_task(1) = 0
+list_task(NTASK+1) = nrec
+
+if (print_progress) then
+  print *
+  print *, 'Progress:'
+  write(*, fmt=barformat) barprogress
+end if
+
+!-----------------------------------------!
+! ====== Loop on shapefile records ====== !
+!-----------------------------------------!
+totarea = 0d0
+totrastarea = 0d0
+n = 0
+do itask = 1,NTASK
+    do irec = list_task(itask)+1,list_task(itask+1)
+
+
+        !---------------------------------!
+        ! ==== Loop on polygon parts ==== !
+        !---------------------------------!
+        recarea = 0d0
+        do ipart = 1,nparts(irec)
+
+            n = n + 1
+
+            npts = partlen(n)
+            polygon2(:,1:npts) = polygon(:, recpos(irec)+partpos(n):recpos(irec)+partpos(n)+npts-1)
+
+
+            ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - !
+            ! - Preliminary loop on points to have a beginning point on a cell edge:  - !
+
+            k0 = 1
+            x2 = polygon2(1,k0)
+            y2 = polygon2(2,k0)
+            call get_pos(polygon2(:,k0), polygon2(:,k0+1), xbnd, ybnd, i, j)
+            y0 = y2!ybnd(j)
+
+            area = 0d0
+            goon = .true.
+            do while (goon)
+
+                x1 = x2
+                y1 = y2
+                x2 = polygon2(1,k0+1)
+                y2 = polygon2(2,k0+1)
+
+                area = area + segment_area(y0, x1, y1, x2, y2, authradius)
+
+                if (y2 > ybnd(j+1)) then
+                    dj = +1
+                    naddj = 1
+                    do while (y2 > ybnd(j+1+naddj))
+                        naddj = naddj + 1
+                    end do
+                    j = j + naddj
+                    yaddtiming(1) = (ybnd(j) - y1) / (y2 - y1)
+                    xin = x1 + yaddtiming(1)*(x2 - x1)
+                    goon = .false.
+                elseif (y2 < ybnd(j)) then
+                    dj = -1
+                    naddj = 1
+                    do while (y2 < ybnd(j-naddj))
+                        naddj = naddj + 1
+                    end do
+                    j = j - naddj
+                    yaddtiming(1) = (ybnd(j+1) - y1) / (y2 - y1)
+                    xin = x1 + yaddtiming(1)*(x2 - x1)
+                    goon = .false.
+                else
+                    dj = 0
+                    yaddtiming(1) = -1d99
+                end if
+
+                if (x2 > xbnd(i+1)) then
+                    di = +1
+                    naddi = 1
+                    do while (x2 > xbnd(i+1+naddi))
+                        naddi = naddi + 1
+                    end do
+                    i = i + naddi
+                    xaddtiming(1) = (xbnd(i) - x1) / (x2 - x1)
+                    yin = y1 + xaddtiming(1)*(y2 - y1)
+                    goon = .false.
+                elseif (x2 < xbnd(i)) then
+                    di = -1
+                    naddi = 1
+                    do while (x2 < xbnd(i-naddi))
+                        naddi = naddi + 1
+                    end do
+                    i = i - naddi
+                    xaddtiming(1) = (xbnd(i+1) - x1) / (x2 - x1)
+                    yin = y1 + xaddtiming(1)*(y2 - y1)
+                    goon = .false.
+                else
+                    di = 0
+                    xaddtiming(1) = -1d99
+                end if
+
+                k0 = k0 + 1
+                if (k0 == npts) then
+                    goon = .false.
+                end if
+
+            end do
+            ! - End of preliminary loop - !
+            ! - - - - - - - - - - - - - - !
+
+
+            if (.not. visited(i,j)) then
+                visited(i,j) = .true.
+                nvisited = nvisited + 1
+                list_visited(:,nvisited) = (/i,j/)
+            end if
+
+
+            if (k0 == npts) then ! The entire polygon is in the same cell
+
+                polygon_area(i,j) = polygon_area(i,j) + area
+
+
+            else
+
+
+                if (check) then
+                    ! Continute Preliminary loop to the end of the records to get its area
+                    x2 = polygon2(1,k0)
+                    y2 = polygon2(2,k0)
+                    do k = k0,npts-1
+                        x1 = x2
+                        y1 = y2
+                        x2 = polygon2(1,k+1)
+                        y2 = polygon2(2,k+1)
+                        area = area + segment_area(y0, x1, y1, x2, y2, authradius)
+                    end do
+                end if
+                
+
+                ! new starting point:
+                if (xaddtiming(1) > yaddtiming(1)+tolerance) then
+                    ! consider 'x' shift if last jump was across one of cell 'x' boundaries
+                    xin = xbnd(i + int((1-di)/2))
+                    dj = 0
+                elseif (yaddtiming(1) > xaddtiming(1)+tolerance) then
+                    ! consider 'y' shift if last jump was across one of cell 'y' boundaries
+                    yin = ybnd(j + int((1-dj)/2))
+                    di = 0
+                else
+                    ! if last jump crossed one of cell corner (xaddtiming == yaddtiming +/- tolerance)
+                    ! consider 'x' shift if negative diagonal motion (di = -dj)  or 'y' shift is positive diagonal motion
+                    xin = xbnd(i + int((1-di)/2))
+                    yin = ybnd(j + int((1-dj)/2))
+                    if (di == -dj) then
+                        iadd = iadd + 1
+                    else
+                        jadd = jadd + 1
+                    end if
+                end if
+
+
+                ! Reorder polygon with the new starting point
+                polygon2(1, 1:npts) = (/ polygon2(1, k0:npts), polygon2(1, 2:k0) /)
+                polygon2(2, 1:npts) = (/ polygon2(2, k0:npts), polygon2(2, 2:k0) /)
+
+                ! Loop initial conditions:
+                dj0 = dj
+                x1 = xin
+                y1 = yin
+                x2 = polygon2(1,1)
+                y2 = polygon2(2,1)
+                y0 = ybnd(j)
+
+                !------------------------------------!
+                ! == Loop on polygon part points: == !
+                !------------------------------------!
+                do k = 2,npts
+
+                    ! record area of last segment
+                    polygon_area(i,j) = polygon_area(i,j)  + segment_area(y0, x1, y1, x2, y2, authradius)
+
+                    x1 = x2
+                    y1 = y2
+                    x2 = polygon2(1,k)
+                    y2 = polygon2(2,k)
+
+                    ! Additional points if (x,y)_k+1 is out of the current cell:
+                    if (y2 > ybnd(j+1)) then
+                        dj = +1
+                        naddj = 1
+                        yadd(naddj) = ybnd(j+naddj)
+                        yaddtiming(naddj) = (yadd(naddj) - y1) / (y2 - y1)
+                        do while (y2 > ybnd(j+1+naddj))
+                            naddj = naddj + 1
+                            yadd(naddj) = ybnd(j+naddj)
+                            yaddtiming(naddj) = (yadd(naddj) - y1) / (y2 - y1)
+                        end do
+                    elseif (y2 < ybnd(j)) then
+                        dj = -1
+                        naddj = 1
+                        yadd(naddj) = ybnd(j-naddj+1)
+                        yaddtiming(naddj) = (yadd(naddj) - y1) / (y2 - y1)
+                        do while (y2 < ybnd(j-naddj))
+                            naddj = naddj + 1
+                            yadd(naddj) = ybnd(j-naddj+1)
+                            yaddtiming(naddj) = (yadd(naddj) - y1) / (y2 - y1)
+                        end do
+                    else
+                        if (y1==ybnd(j+1) .and. y2==ybnd(j+1) .and. x2<xbnd(i)) then
+                            dj = +1
+                            naddj = 1
+                            yadd(1) = ybnd(j+1)
+                            yaddtiming(1) = 0d0
+                        elseif (y1==ybnd(j) .and. y2==ybnd(j) .and. x2>xbnd(i+1)) then
+                            dj = -1
+                            naddj = 1
+                            yadd(1) = ybnd(j)
+                            yaddtiming(1) = 0d0
+                        else
+                            dj = 0
+                            naddj = 0
+                        end if
+                    end if
+
+                    if (x2 > xbnd(i+1)) then
+                        di = +1
+                        naddi = 1
+                        xadd(naddi) = xbnd(i+naddi)
+                        xaddtiming(naddi) = (xadd(naddi) - x1) / (x2 - x1)
+                        do while (x2 > xbnd(i+1+naddi))
+                            naddi = naddi + 1
+                            xadd(naddi) = xbnd(i+naddi)
+                            xaddtiming(naddi) = (xadd(naddi) - x1) / (x2 - x1)
+                        end do
+                    elseif (x2 < xbnd(i)) then
+                        di = -1
+                        naddi = 1
+                        xadd(naddi) = xbnd(i-naddi+1)
+                        xaddtiming(naddi) = (xadd(naddi) - x1) / (x2 - x1)
+                        do while (x2 < xbnd(i-naddi))
+                            naddi = naddi + 1
+                            xadd(naddi) = xbnd(i-naddi+1)
+                            xaddtiming(naddi) = (xadd(naddi) - x1) / (x2 - x1)
+                        end do
+                    else
+                        if (x1==xbnd(i+1) .and. x2==xbnd(i+1) .and. y2>ybnd(j+1)) then
+                            di = +1
+                            naddi = 1
+                            xadd(1) = xbnd(i+1)
+                            xaddtiming(1) = 0d0
+                        elseif (x1==xbnd(i) .and. x2==xbnd(i) .and. y2<ybnd(j)) then
+                            di = -1
+                            naddi = 1
+                            xadd(1) = xbnd(i)
+                            xaddtiming(1) = 0d0
+                        else
+                            di = 0
+                            naddi = 0
+                        end if
+                    end if
+
+                    xaddtiming(naddi+1) = 1d99
+                    yaddtiming(naddj+1) = 1d99
+                    iadd = 1
+                    jadd = 1
+                    nadd = 0
+                    do while (iadd <= naddi .or. jadd <= naddj)
+                        nadd = nadd + 1
+                        if (xaddtiming(iadd) < yaddtiming(jadd)-tolerance) then
+                            ! consider 'x' shift if current jump crossed one of cell 'x' boundaries first
+                            xyadd(:,nadd) = (/ xadd(iadd), y1 + xaddtiming(iadd)*(y2-y1) /)
+                            iadd = iadd + 1
+                        elseif (yaddtiming(jadd) < xaddtiming(iadd)-tolerance) then
+                            ! consider 'y' shift if current jump crossed one of cell 'y' boundaries first
+                            xyadd(:,nadd) = (/ x1 + yaddtiming(jadd)*(x2-x1), yadd(jadd) /)
+                            jadd = jadd + 1
+                        else
+                            ! if jump crossed one of cell corners (xaddtiming == yaddtiming +/- tolerance)
+                            ! consider 'x' shift if positive diagonal motion (di==dj) or 'y' shift if neg. diagonal motion (di==-dj)
+                            xyadd(:,nadd) = (/ xadd(iadd), yadd(jadd) /)
+                            if (di == dj) then
+                                iadd = iadd + 1
+                            else
+                                jadd = jadd + 1
+                            end if
+                        end if
+                        ijadd(:,nadd) = (/ i+di*(iadd-1), j+dj*(jadd-1) /)
+                    end do
+
+
+                    ! record areas of additional points segments and record in/out points on borders:
+                    do kadd = 1,nadd
+
+                        x2_add = xyadd(1,kadd)
+                        y2_add = xyadd(2,kadd)
+                        di = ijadd(1,kadd) - i
+                        dj = ijadd(2,kadd) - j
+
+                        polygon_area(i,j) = polygon_area(i,j)  + segment_area(y0, x1, y1, x2_add, y2_add, authradius)
+
+                        call close_cell_ring(polygon_area(i,j), xbnd(i:i+1), ybnd(j:j+1), xin, x2_add, y0, dj0, dj, authradius)
+
+                        call record_border_out(di, dj, x2_add, y2_add, last_border_pos(:,i,j), is_last_border_out(:,i,j))
+
+                        dj0 = dj
+                        i = ijadd(1,kadd)
+                        j = ijadd(2,kadd)
+                        x1 = xyadd(1,kadd)
+                        xin = x1
+                        y1 = xyadd(2,kadd)
+                        yin = y1
+                        y0 = ybnd(j)
+
+                        if (.not. visited(i,j)) then
+                            visited(i,j) = .true.
+                            nvisited = nvisited + 1
+                            list_visited(:,nvisited) = (/i,j/)
+                        end if
+
+                        call record_border_in(di, dj, x2_add, y2_add, last_border_pos(:,i,j), is_last_border_out(:,i,j))
+
+                    end do
+
+                end do
+                !-----------------------------!
+                ! == end of loop on points == !
+                !-----------------------------!
+
+
+            end if
+            recarea = recarea + area
+
+
+        end do
+        !--------------------------------!
+        ! ==== end of loop on parts ==== !
+        !--------------------------------!
+
+
+
+        if (split) then
+
+
+            ! areas modulo:
+            do k = 1,nvisited
+                i = list_visited(1,k)
+                j = list_visited(2,k)
+                do while (polygon_area(i,j)  <  -tolerance * grid_area(i,j))
+                    polygon_area(i,j) = polygon_area(i,j) + grid_area(i,j)
+                end do
+                do while (polygon_area(i,j)  >  (1d0+tolerance) * grid_area(i,j))
+                    polygon_area(i,j) = polygon_area(i,j) - grid_area(i,j)
+                end do
+                if (polygon_area(i,j) < 0d0)             polygon_area(i,j) = 0d0
+                if (polygon_area(i,j) > grid_area(i,j))  polygon_area(i,j) = grid_area(i,j)
+            end do
+
+
+            ! fill polygon interior:
+            call get_connected_points(list_visited, nvisited, last_border_pos, is_last_border_out, &
+                                      connected, list_connected, nconnected)
+            call fill_polygon_interior(polygon_area, grid_area, visited, connected, list_connected, nconnected)
+
+
+            if (split_records) then
+                ! Write output
+                if (area_fract) then
+                    call write_output_slice(ofid, ovarid, polygon_area/grid_area, irec)
+                else
+                    call write_output_slice(ofid, ovarid, polygon_area, irec)
+                end if
+            else
+                ! Add current record area to total
+                polygon_area_sum = polygon_area_sum + polygon_area
+            end if
+
+
+            if (check) then
+                if (check_rec_area) then
+                    rastarea = sum(polygon_area)
+                    totrastarea = totrastarea + rastarea
+                    ! Display summary
+                    print *
+                    print *, '---------------------------------------------------'
+                    print *, 'Record #', irec, '/', nrec
+                    print *, 'Record area (m2):          ', recarea
+                    print *, 'Record area in raster (m2):', rastarea
+                    print *, 'Minimum area ratio:        ', minval(polygon_area/grid_area)
+                    print *, 'Maximum area ratio:        ', maxval(polygon_area/grid_area)
+                    print *, '---------------------------------------------------'
+                end if
+                totarea = totarea + recarea
+            end if
+
+
+            ! reinitialization
+            call reinitialize_border(list_visited, nvisited, last_border_pos)
+            polygon_area = 0d0
+            nvisited = 0
+            nconnected = 0
+            visited = .false.
+            connected = .false.
+
+
+
+        else
+
+            if (split_connected_computation) then
+                ! Record connected points:
+                call get_connected_points(list_visited, nvisited, last_border_pos, is_last_border_out, &
+                                        connected, list_connected, nconnected)
+                call reinitialize_border(list_visited, nvisited, last_border_pos)
+            end if
+
+            if (check)  totarea = totarea + recarea
+
+        end if
+
+
+
+    end do
+    if (print_progress) write(*, fmt='(A1)', advance='no') '|'
+end do
+if (print_progress) print *
+!------------------------------------------------!
+! ====== End of loop on shapefile records ====== !
+!------------------------------------------------!
+
+
+
+if (.not. split_records) then
+
+
+    if (split_computation) then
+        polygon_area = polygon_area_sum
+    else
+        ! areas modulo:
+        do k = 1,nvisited
+            i = list_visited(1,k)
+            j = list_visited(2,k)
+            do while (polygon_area(i,j)  <  -tolerance * grid_area(i,j))
+                polygon_area(i,j) = polygon_area(i,j) + grid_area(i,j)
+            end do
+            do while (polygon_area(i,j)  >  (1d0+tolerance) * grid_area(i,j))
+                polygon_area(i,j) = polygon_area(i,j) - grid_area(i,j)
+            end do
+            if (polygon_area(i,j)  <  tolerance * grid_area(i,j))        polygon_area(i,j) = 0d0
+            if (polygon_area(i,j)  >  (1d0-tolerance) * grid_area(i,j))  polygon_area(i,j) = grid_area(i,j)
+        end do
+
+        ! fill polygon interior:
+        if (.not. split_connected_computation)  call get_connected_points(list_visited, nvisited, last_border_pos, &
+                                                                          is_last_border_out, connected, list_connected, nconnected)
+        call fill_polygon_interior(polygon_area, grid_area, visited, connected, list_connected, nconnected)
+    end if
+
+
+    ! Write output
+    if (area_fract) then
+        call write_output(ofid, ovarid, polygon_area/grid_area)
+    else
+        call write_output(ofid, ovarid, polygon_area)
+    end if
+
+
+    totrastarea = sum(polygon_area)
+
+
+end if
+
+
+
+if (check) then
+    ! Display summary
+    print *
+    print *, '---------------------------------------------------------'
+    print *, 'Earth area (m2):                 ', sum(grid_area)
+    print *, 'Shapefile Total area (m2):       ', totarea
+    print *, 'Total area of raster output (m2):', totrastarea
+    print *, 'Minimum area ratio:              ', minval(polygon_area/grid_area)
+    print *, 'Maximum area ratio:              ', maxval(polygon_area/grid_area)
+    print *, '---------------------------------------------------------'
+end if
+
+
+
+
+!===================!
+! Close output file !
+!===================!
+
+call close_file(ofid)
+
+print *
+print *, 'Created '//trim(output_file)//' successfully.'
+
+
+
+
+end program

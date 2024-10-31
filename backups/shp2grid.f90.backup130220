@@ -1,0 +1,989 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  FUNCTIONS:  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+module local_functions
+implicit none
+
+contains
+
+
+    !! de-projection functions:
+    !
+    !def deprojection(proj,coord):
+    !
+    !    if (proj) then
+    !
+    !
+    !        ! SHAPING:
+    !
+    !        if (np.ndim(coord) == 1) then !( x1, y1, x2, y2, ... )
+    !
+    !            n = int( size(coord) / 2 )
+    !            coord2 = np.zeros( (n,2) )
+    !            coord2(:,0) = coord(0:2*n-1:2)
+    !            coord2(:,1) = coord(1:2*n:2)
+    !
+    !        else !( (x1, y1); (x2, y2); ... )
+    !
+    !            coord2 = coord
+    !
+    !        end if
+    !
+    !
+    !        ! COMPUTATION:
+    !
+    !        if (proj(0) is 'albers') then
+    !            param = proj(1)
+    !            coord2 = albers_ellips(coord2,param)
+    !        end if
+    !
+    !
+    !        ! DESHAPING:
+    !
+    !        if (np.ndim(coord) == 1) then
+    !
+    !            do i = 1,n
+    !                coord(2*i-1) = coord2(i,0)
+    !                coord(2*i) = coord2(i,1)
+    !            end do
+    !
+    !        else
+    !
+    !            coord = coord2
+    !
+    !        end if
+    !
+    !
+    !    end if
+    !
+    !
+    !    return coord
+    !
+    !
+    !def albers(coord,param):
+    !    double precision, parameter:: PI = acos(-1d0)
+    !
+    !    RE, lam0, phi0, phi1, phi2  =  param
+    !    !
+    !    n = 0.5 * ( sin((PI/180)*phi1) + sin((PI/180)*phi2) )
+    !    C = cos((PI/180)*phi1)**2 + 2*n*sin((PI/180)*phi1)
+    !    rho0 = (1/n) * sqrt( C - 2*n*sin((PI/180)*phi0) )
+    !
+    !    ! coord: array of coordinates (lam,phi) in degrees.
+    !
+    !    x,y  =  (1/RE)*coord(:,0) , (1/RE)*coord(:,1)
+    !    phi = (180./PI) * asin( ( C - n**2*(x**2 + (y-rho0)**2) ) / (2*n) )
+    !    lam = lam0  -  (1/n) * (180./PI) * asin( x / sqrt(x**2 + (y-rho0)**2) )
+    !    coord(:,0),coord(:,1) = lam,phi
+    !
+    !    return coord
+    !
+    !def albers_ellips(coord,param):
+    !
+    !    datum, lam0, phi0, phi1, phi2  =  param
+    !    prj = pyproj.Proj( proj='aea', datum=datum, lon_0=lam0, lat_0=phi0, lat_1=phi1, lat_2=phi2 )
+    !    lon,lat = prj( coord(:,0) , coord(:,1)  , inverse=.true., radians=.false. )
+    !    lonlat = transpose(np.array((lon,lat)))
+    !    coord(~np.isnan(coord)) = lonlat(~np.isnan(coord))
+    !    return coord
+
+    !==================================================!
+
+    function authlat(phi,ecc)
+        double precision:: authlat
+        double precision, intent(in):: phi, ecc
+        double precision:: qp, q
+        qp   =   1   -   ( (1 - ecc**2) /(2*e) ) * log( (1 - ecc) / (1 + ecc) )
+        q    =   (1 - ecc**2)*sin(phi) / (1 - (ecc*sin(phi))**2)   -   ( (1 - ecc**2) /(2*e) ) * log( (1 - ecc*sin(phi)) / (1 + ecc*sin(phi)) )
+        authlat = asin( q / qp )
+    end function
+
+
+    !==================================================!
+
+
+    function get_pos(x,vec)
+        integer:: get_pos
+        double precision, intent(in):: x, vec(:)
+        integer:: i1, i2, i
+
+        i2 = size(vec)
+        i1 = 1
+        do while (i2-i1 > 1)
+            i = (i1+i2) / 2 
+            !
+            if (x >= vec(i)) then
+                i1 = i
+            else
+                i2 = i
+            end if
+        end do
+
+        get_pos = i1
+
+    end function
+
+
+    !==================================================!
+
+
+    function segment_area(y0, x1, y1, x2, y2)
+        double precision:: segment_area
+        double precision, intent(in):: y0, x1, y1, x2, y2
+        !
+        if (abs(y1-y2)<1e-14) then
+            segment_area = (RE**2) * (x2-x1) * ( sin((y1+y2)/2) - sin(y0) )
+        else
+            segment_area = (RE**2) * (x2-x1) * ( (cos(y1)-cos(y2))/(y2-y1) - sin(y0) )
+        end if
+    end function
+
+
+    !==================================================!
+
+
+    subroutine get_ibord_in(di, dj, x, y, ibord, pos)
+        integer, intent(in):: di, dj
+        double precision, intent(in):: x, y
+        integer, intent(out):: ibord
+        double precision, intent(out):: pos
+        !
+        if (di==+1) then
+            ibord = 1
+            pos = y
+        elseif (dj==-1) then
+            ibord = 2
+            pos = x
+        elseif (di==-1) then
+            ibord = 3
+            pos = -y
+        else !dj==+1
+            ibord = 4
+            pos = -x
+        end if
+        !
+    end subroutine
+
+    !----------!
+
+    subroutine get_ibord_out(di, dj, x, y, ibord, pos)
+        integer, intent(in):: di, dj
+        double precision, intent(in):: x, y
+        integer, intent(out):: ibord
+        double precision, intent(out):: pos
+        !
+        if (di==-1) then
+            ibord = 1
+            pos = y
+        elseif (dj==+1) then
+            ibord = 2
+            pos = x
+        elseif (di==+1) then
+            ibord = 3
+            pos = -y
+        else !dj==-1
+            ibord = 4
+            pos = -x
+        end if
+        !
+    end subroutine
+
+    !----------!
+
+    subroutine record_border_in(di, dj, x, y, last_border_pos, is_last_border_out)
+        integer, intent(in):: di, dj
+        double precision, intent(in):: x, y
+        double precision, dimension(4), intent(out):: last_border_pos
+        logical, dimension(4), intent(out):: is_last_border_out
+        integer:: ibord
+        double precision:: pos
+
+        call get_ibord_in(di, dj, x, y, ibord, pos)
+
+        if (pos > last_border_pos(ibord)) then
+            last_border_pos(ibord) = pos
+            is_last_border_out(ibord) = .false.
+        end if
+
+    end subroutine
+
+    !----------!
+
+    subroutine record_border_out(di, dj, x, y, last_border_pos, is_last_border_out)
+        integer, intent(in):: di, dj
+        double precision, intent(in):: x, y
+        double precision, dimension(4), intent(out):: last_border_pos
+        logical, dimension(4), intent(out):: is_last_border_out
+        integer:: ibord
+        double precision:: pos
+
+        call get_ibord_out(di, dj, x, y, ibord, pos)
+
+        if (pos > last_border_pos(ibord)) then
+            last_border_pos(ibord) = pos
+            is_last_border_out(ibord) = .true.
+        end if
+
+    end subroutine
+
+
+    !==================================================!
+
+
+    subroutine connect_point( polygon_area, grid_area, i,j, connected, list_connected_points, nconnected )
+        double precision, dimension(:,:), intent(inout):: polygon_area
+        double precision, dimension(:,:), intent(in):: grid_area
+        integer, intent(in):: i, j
+        logical, dimension(:,:), intent(inout):: connected
+        integer, dimension(:,:), intent(inout):: list_connected_points
+        integer, intent(inout):: nconnected
+        integer:: nx, ny
+        !
+        nx = size(polygon_area,1)
+        ny = size(polygon_area,2)
+        !
+        if (i>=0 .and. i<nx .and. j>=0 .and. j<ny) then
+            if (polygon_area(i,j)==0) then
+                if (.not. connected(i,j)) then
+                    connected(i,j) = .true.
+                    nconnected = nconnected + 1
+                    list_connected_points(:,nconnected) = (/i,j/)
+                    polygon_area(i,j) = grid_area(i,j)
+                end if
+            end if
+        end if
+        !
+    end subroutine
+
+    !----------!
+
+    subroutine get_connected_points( polygon_area, list_index, nvisited, last_border_pos, is_last_border_out, &
+                                     connected, list_connected_points, nconnected )
+        double precision, dimension(:,:), intent(inout):: polygon_area
+        integer, dimension(:), intent(in):: list_index
+        integer, inten(in):: nvisited
+        double precision, dimension(:,:,:), intent(in):: last_border_pos
+        logical, dimension(:,:,:), intent(in):: is_last_border_out
+        logical, dimension(:,:), intent(out):: connected
+        integer, dimension(:,:), intent(out):: list_connected_points
+        integer, intent(out):: nconnected
+        !
+        integer, dimension(7), parameter:: modulolist = (/1,2,3,4,1,2,3/)
+        integer, dimension(2,4), parameter:: dirlist = reshape( (/  -1,0,  0,+1,  +1,0,  0,-1 /),   shape=(/2,4/) )
+        !                                                           left,   up,   right, down
+        logical:: enterloop
+
+        nconnected = 0
+
+        do k = 1,nvisited
+
+            i0 = list_index(1,k)
+            j0 = list_index(2,k)
+
+            enterloop = .false.
+            ibord0 = 0
+            do ibord = 1,4
+                if (last_border_pos(i0,j0,ibord) > -9d+99) then
+                    ibord0 = ibord
+                    enterloop = .true.
+                end if
+            end do
+
+
+            if (enterloop) then
+
+                ! sort list of entry/exit points:
+                connected_bord = (/ .false., .false., .false., .false. /)
+
+                i = i0 + dirlist(1,ibord0)
+                j = j0 + dirlist(2,ibord0)
+                call connect_point( polygon_area, i,j, connected, list_connected_points, nconnected )
+
+                ibord = ibord0
+                connected_bord(ibord) = .true.
+
+                do idummy = ibord0+1,ibord0+3
+
+                    ibord = modulolist(idummy) ! ibord = ibord + 1 modulo 4, as modulolist = (/1,2,3,4,1,2,3/)
+
+                    ! border is connected if there is any entry/exit point on it:
+                    if (last_border_pos(i0,j0,ibord) > -9d99) then
+                        i = i0 + dirlist(1,ibord)
+                        j = j0 + dirlist(2,ibord)
+                        call connect_point( polygon_area, i,j, connected, list_connected_points )
+                        connected_bord(ibord) = .true.
+
+                    ! border connected if empty and...
+                    elseif (last_border_pos(i0,j0,ibord-1) > -9d+99) then
+                        ! ... last point of previous border is an exit point:
+                        if (is_last_border_out(i,j,ibord-1)) then
+                            i = i0 + dirlist(1,ibord)
+                            j = j0 + dirlist(2,ibord)
+                            call connect_point( polygon_area, i,j, connected, list_connected_points )
+                            connected_bord(ibord) = .true.
+
+                    else
+                        !  ... or previous border is empty and connected:
+                        if (connected_bord(ibord-1)) then
+                            i = i0 + dirlist(1,ibord)
+                            j = j0 + dirlist(2,ibord)
+                            call connect_point( polygon_area, i,j, connected, list_connected_points )
+                            connected_bord(ibord) = .true.
+                        end if
+
+                    end if
+
+                end do
+            end if
+
+        end do
+
+        return polygon_area, connected, list_connected_points
+
+    end subroutine
+
+    !----------!
+
+    subroutine spread_and_fill(polygon_area, grid_area, list_active, nactive)
+        double precision, dimension(:,:), intent(inout):: polygon_area
+        double precision, dimension(:,:), intent(in):: grid_area
+        integer, dimension(:,:), intent(inout):: list_active
+        integer, intent(inout):: nactive
+        integer, dimension(2,4), parameter:: dirlist = reshape( (/  -1,0,  0,+1,  +1,0,  0,-1 /),   shape=(/2,4/) )
+        !                                                           left,   up,   right, down
+        integer:: i, j, k, l,  n, nx, ny
+
+        nx = size(polygon_area,1)
+        ny = size(polygon_area,2)
+
+        do while ( nactive > 0 )
+            n = 0
+            do k = 1,nactive
+                do l = 1,4
+                    i = list_active(1,k) + dirlist(1,l)
+                    j = list_active(2,k) + dirlist(2,l)
+                    if (i>0 .and. i<=nx .and. j>0 .and. j<=ny) then
+                        if (polygon_area(i,j)==0) then
+                            polygon_area(i,j) = grid_area(i,j)
+                            n = n+1
+                            new_list_active(:,n) = (/i,j/)
+                        end if
+                    end if
+                end do
+            end do
+            nactive = n
+            list_active(:,1:nactive) = new_list_active(:,1:nactive)
+        end do
+
+    end subroutine
+
+    !----------!
+
+    subroutine fill_polygon_interior(polygon_area, grid_area, list_index, last_border_pos, is_last_border_out)
+        double precision, dimension(:,:), intent(inout):: polygon_area
+        double precision, dimension(:,:), intent(in):: grid_area
+        integer, dimension(:), intent(in):: list_index
+        integer, dimension(:,:,:), intent(in):: last_border_pos
+        logical, dimension(:,:,:), intent(in):: is_last_border_out
+        integer, dimension(:,:):: list_connected_points
+        integer:: nconnected
+        !
+        call get_connected_points(polygon_area, list_index, nvisited, last_border_pos, is_last_border_out, &
+                                  list_connected_points, nconnected)
+        call spread_and_fill(polygon_area, list_connected_points, nconnected)
+        !
+    end subroutine
+
+
+    !==================================================!
+
+
+    subroutine define_grid( bbox, dlon, dlat, eccentricity, xbounds, ybounds, nx, ny, grid_area, init_polygon_area )
+        double precision, parameter:: PI = acos(-1d0)
+        double precision, dimension(4), intent(in):: bbox
+        double precision, intent(in):: dlon, dlat, eccentricity
+        integer, intent(out):: nx, ny
+        double precision, dimension(:), allocatable, intent(out):: xbounds, ybounds
+        double precision, dimension(:,:), allocatable, intent(out):: grid_area, init_polygon_area
+
+        nx = int(round( (x1-x0) / dlon ))
+        ny = int(round( (y1-y0) / dlat ))
+
+        allocate(xbounds(nx+1))
+        allocate(ybounds(ny+1))
+        allocate(init_polygon_area(nx,ny))
+        allocate(grid_area(nx,ny))
+
+        xbounds = (/ (   x0 + i*(x1-x0)/nx,   i=0,nx   ) /)
+        ybounds = (/ (   y0 + j*(y1-y0)/ny,   j=0,ny   ) /)
+
+        ! degree -> radian conversion:
+        xbounds = (PI/180) * xbounds
+        ybounds = (PI/180) * ybounds
+
+        ! conversion in authalic latitude:
+        ybounds = authlat( ybounds , eccentricity )
+
+        ! Total grid cell area:
+        do j = 1,ny
+            do i = 1,nx
+                grid_area(i,j)  =  (RE**2) * (xbnd2(i+1)-xbnd2(i)) * (sin(ybnd2(j+1))-sin(ybnd2(j)))
+            end do
+        end do
+
+        ! Initialise polygon area (zero)
+        init_polygon_area = 0
+
+        end subroutine
+
+
+
+end module
+
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  MAIN PROGRAM: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+program shp2grid
+
+use input_name_functions, only: remove_extension
+use local_functions, only: authlat, get_pos, segment_area, record_border_in, record_border_out, fill_polygon_interior
+implicit none
+
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++!
+double precision, parameter:: PI = acos(-1d0)
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++!
+!*******************************!
+!*   WGS84 DATUM PARAMETERS:   *!
+!*******************************!
+! Earth ellipsoidal semi-major axis
+double precision, parameter:: a = 63781370 !m
+! Earth ellipsoidal excentricity
+double precision, parameter:: fm1 = 298.257223563 ! inverse flattenning
+double precision, parameter:: eccentricity = sqrt(  1  -  (1-1/fm1)**2  )
+! Earth Authalic Radius:
+double precision, parameter:: RE = 6371007.2 !m
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++!
+
+
+!!!!!!!!!! OPTIONS: !!!!!!!!!!
+
+logical, parameter:: check = .true.
+logical, parameter:: global_grid = .true.
+logical, parameter:: split_records = .true.
+character(len=*), parameter:: split_field = 'xx'
+
+double precision, parameter:: dlon = 1d0
+double precision, parameter:: dlat = 1d0
+
+! for global grid only:
+double precision, parameter:: lon0 = -180d0
+double precision, parameter:: lon1 =  180d0
+double precision, parameter:: lat0 = -90d0
+double precision, parameter:: lat1 =  90d0
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+character(len=*), parameter:: def_output_name = 'gridded_shapefile'
+
+integer:: nx, ny
+double precision, dimension(:,:,:), allocatable:: polygon_area_0
+double precision, dimension(:,:),   allocatable:: grid_area, polygon_area
+double precision, dimension(:,:),   allocatable:: polygon, polygon2
+double precision, dimension(:,:,:), allocatable:: last_border_pos
+double precision, dimension(:),     allocatable:: xbounds, ybounds, xbnd2, ybnd2
+logical, dimension(:,:,:), allocatable:: is_last_border_out
+integer, dimension(:,:), allocatable:: list_index
+integer:: nvisited
+
+double precision:: x0, y0, x1, y1, x2, y2, x0_2, y0_2, xin, yin, area
+double precision, dimension(4):: bbox, grid_bbox
+integer:: i, j, k, di, dj, di0, dj0, ishp, ipart, ifile
+integer:: n, npart, nrec, narg, nfile
+character(len=200), dimension(:), allocatable:: input_files
+character(len=200):: output_file
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!              ARGUMENT SCANNING               !!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+narg = command_argument_count()
+
+
+! Files name:
+!------------
+
+if (narg==0) then
+  
+  nfile = 1 
+  allocate(input_files(nfile))
+  print *, 'shapefile name (between quotes, without extension): '
+  read *, input_files(1)
+
+else
+
+  nfile = narg
+  allocate(input_files(nfile))
+  do k = 1,narg
+    call  get_command_argument(k, input_files(k))
+  end do
+
+end if
+
+
+do k = 1,nfile
+  call remove_extension( input_files(k), (/'.shp','.shx','.dbf','.prj','.sbn','.sbx'/) )
+end do
+
+
+! Output file name:
+
+output_file = def_output_name//'.grd'
+
+
+
+
+
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!                 COMPUTATION                  !!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+do ifile = 1, nfile
+
+
+
+    print *, 'pre-loading...'
+
+    SHP = shapefile.Reader(input_file(ifile))
+
+    ! grid definition and initialize polygon area (if global grid or if put all records in the same file):
+    if (global_grid .or. (.not. split_records)) then
+        if (global_grid) then
+            grid_bbox = (/lon0, lat0, lon1, lat1/)
+        else
+            grid_bbox = bbox
+        end if
+        define_grid( grid_bbox, dlon, dlat, eccentricity, xbounds, ybounds, nx, ny, grid_area, polygon_area )
+    end if
+
+
+    print *, 'computation...'
+    ! * * * * * * * * 
+    do ishp = 1,1000 !1,nrec
+    ! * * * * * * * *
+
+        ! loading
+        polygon = ...
+        part = ...
+
+        ! degree -> radian conversion:
+        polygon = (PI)/180 * polygon
+
+        ! conversion in authalic latitude:
+        polygon(:,1) = authlat( polygon(:,1) , e )
+
+
+        ! grid definition (not global grid) and initialize polygon_area (if put each record in separate file)
+        if (.not. global_grid) then
+            define_grid( bbox, dlon, dlat, eccentricity, xbounds, ybounds, nx, ny, grid_area, polygon_area )
+        elseif (split_records) then
+            polygon_area = 0
+        end if
+
+
+        !========================================= PROCESSING: ==========================================!
+
+
+        ! - - - - - - - - - -  initialisation:  - - - - - - - - - - !
+        !
+        nvisited = 0
+        !
+        ! "list_index" contains {i,j} positions in of visited points
+        !
+        last_border_pos = -9d+99
+        !       contains the position on a cell edge of the right-most (lookinf from outside the cell) entry/exist point
+        !       ** A border (or edge) is considered empty is its right-most point position is -9d+99 **
+        !
+        ! "is_last_border_out" tells if the the point of each edge of each cell is an exit point (= .true.) or an entry point
+        ! (= .false.) 
+        !
+        !  "last_border_pos" and "is_last_border_out" have the shape (nx,ny,4)
+        !  3rd dimension: cell edges: 1: left, 2: up, 3: right, 4: down
+        !
+        ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - !
+
+
+        !print *, 'record '+str(ishp+1)+'/'+str(SHP.numRecords)
+        !print *, str(len(part))+' parts; '+str(len(pol))+' points'
+        do ipart = 1,npart
+
+            polygon2 = polygon(part(ipart):part(ipart+1),:)
+
+
+            ! first loop to have a beginning point on a cell edge:
+
+            k = 1
+            x2 = polygon2(k,1)
+            y2 = polygon2(k,2)
+            i = get_pos( polygon2(k,1), xbnd2 )
+            j = get_pos( polygon2(k,2), ybnd2 )
+            y0 = y2!ybnd2(j)
+
+            area = 0
+            goon = .true.
+            do while (goon)
+
+                x1 = x2
+                y1 = y2
+                x2 = polygon2(k+1,1)
+                y2 = polygon2(k+1,2)
+
+                if (y2 > ybnd2(j+1)) then
+                    dj0 = +1
+                    x2 = x1  +  (x2-x1) * (ybnd2(j+1)-y1)/(y2-y1)
+                    y2 = ybnd2(j+1)
+                    goon = .false.
+                elseif (y2 < ybnd2(j)) then
+                    dj0 = -1
+                    x2 = x1  +  (x2-x1) * (ybnd2(j)-y1)/(y2-y1)
+                    y2 = ybnd2(j)
+                    goon = .false.
+                else
+                    dj0 = 0
+                end if
+
+                if (x2 > xbnd2(i+1)) then
+                    di0 = +1
+                    dj0 = 0
+                    y2 = y1  +  (y2-y1) * (xbnd2(i+1)-x1)/(x2-x1)
+                    x2 = xbnd2(i+1)
+                    goon = .false.
+                elseif (x2 < xbnd2(i)) then
+                    di0 = -1
+                    dj0 = 0
+                    y2 = y1  +  (y2-y1) * (xbnd2(i)-x1)/(x2-x1)
+                    x2 = xbnd2(i)
+                    goon = .false.
+                else
+                    di0 = 0
+                end if
+
+                area = area + segment_area(y0,x1,y1,x2,y2)
+
+                k = k + 1
+                if (k == size(polygon2,0)) then
+                    goon = .false.
+                end if
+
+            end do
+
+
+            if (k == size(polygon2,0)-1) then ! The entire polygon is in the same cell
+
+                polygon_area(i,j) = polygon_area(i,j) + area
+                nvisited = nvisited + 1
+                list_index(:,nvisited) = (/i,j/)
+
+
+            else ! loop on polygon part points:
+
+                ! Reorder polygon with the new starting point
+                polygon2 = ( polygon2(k:-1) , polygon2(:k) )
+                polygon2 = (/ polygon2(k:), polygon2(:k-1) /)
+
+                x2_0 = x2
+                y2_0 = y2
+                xin = x2
+                yin = y2
+                k = 0
+
+                i = i+di0
+                j = j+dj0
+                y0 = ybnd2(j)
+
+                nvisited = nvisited + 1
+                list_index(:,nvisited) = (/i,j/)
+                call record_border_in(di0, dj0, x2, y2, last_border_pos(i,j), is_last_border_out(i,j))
+
+                do while (k < size(polygon2, 0))
+
+                    x1 = x2
+                    y1 = y2
+                    x2 = polygon2(k,0)
+                    y2 = polygon2(k,1)
+
+                    if (y2 > ybnd2(j+1)) then
+                        dj = +1
+                        x2 = x1  +  (x2-x1) * (ybnd2(j+1)-y1)/(y2-y1)
+                        y2 = ybnd2(j+1)
+                    elseif (y2 < ybnd2(j)) then
+                        dj = -1
+                        x2 = x1  +  (x2-x1) * (ybnd2(j)-y1)/(y2-y1)
+                        y2 = ybnd2(j)
+                    else
+                        dj = 0
+                    end if
+                    !
+                    if (x2 > xbnd2(i+1)) then
+                        di = +1
+                        dj = 0
+                        y2 = y1  +  (y2-y1) * (xbnd2(i+1)-x1)/(x2-x1)
+                        x2 = xbnd2(i+1)
+                    elseif (x2 < xbnd2(i)) then
+                        di = -1
+                        dj = 0
+                        y2 = y1  +  (y2-y1) * (xbnd2(i)-x1)/(x2-x1)
+                        x2 = xbnd2(i)
+                    else
+                        di = 0
+                    end if
+
+                    polygon_area(i,j) = polygon_area(i,j)  + segment_area(y0,x1,y1,x2,y2)
+
+
+                    if (di/=0 .or. dj/=0) then
+
+                        ! closed ring correction:
+                        if (dj==+1 .or. dj0==-1) then ! <=> y2==ybnd2(j+1) .or. yin==ybnd2(j+1)
+                            if (dj==-1) then ! <=> y2==ybnd2(j)
+                                polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),xbnd2(i),ybnd2(j+1),xin,ybnd2(j+1))
+                            elseif (dj0==+1) then ! <=> yin==ybnd2(j)
+                                polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),x2,ybnd2(j+1),xbnd2(i+1),ybnd2(j+1))
+                            else
+                                polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),x2,ybnd2(j+1),xin,ybnd2(j+1))
+                            end if
+                        end if
+
+                        call record_border_out(di, dj, x2, y2, last_border_pos(i,j), is_last_border_out(i,j))
+
+                        i = i+di
+                        j = j+dj
+                        di0 = di
+                        dj0 = dj
+                        xin = x2
+                        yin = y2
+                        y0 = ybnd2(j)
+
+                        if (all(last_border_pos(i,j,:)==-9d+99)) then ! if the 4 edges of the cell are empty
+                            nvisited = nvisited + 1
+                            list_index(:,nvisited) = (/i,j/)
+                        end if
+
+                        call record_border_in(di, dj, x2, y2, last_border_pos(i,j), is_last_border_out(i,j))
+
+                    else
+                        k = k + 1
+
+                    end if
+
+
+                end do
+                ! ... actual end of loop ... !
+                ! close point loop with first point of the loop:
+
+                x1 = x2
+                y1 = y2
+                x2 = x2_0
+                y2 = y2_0
+
+                if (y2 == ybnd2(j+1)) then
+                    dj = +1
+                elseif (y2 == ybnd2(j)) then
+                        dj = -1
+                else
+                    dj = 0
+                end if
+                !
+                if (x2 == xbnd2(i+1)) then
+                    di = +1
+                    dj = 0
+                elseif (x2 == xbnd2(i)) then
+                    di = -1
+                    dj = 0
+                else
+                    di = 0
+                end if
+
+
+                polygon_area(i,j) = polygon_area(i,j)  + segment_area(y0,x1,y1,x2,y2)
+
+                ! closed-ring correction:
+                if (dj==+1 .or. dj0==-1) then ! <=> y2==ybnd2(j+1) .or. yin==ybnd2(j+1)
+                    if (dj==-1) then ! <=> y2==ybnd2(j)
+                        polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),xbnd2(i),ybnd2(j+1),xin,ybnd2(j+1))
+                    elseif (dj0==+1) then ! <=> yin==ybnd2(j)
+                        polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),x2,ybnd2(j+1),xbnd2(i+1),ybnd2(j+1))
+                    else
+                        polygon_area(i,j) = polygon_area(i,j) + segment_area(ybnd2(j),x2,ybnd2(j+1),xin,ybnd2(j+1))
+                    end if
+                end if
+
+                call record_border_out(di, dj, x2, ibord, last_border_pos(i,j), is_last_border_out(i,j))
+
+                ! ... end of loop on points ... !
+
+
+            end if
+
+
+        end do
+        ! ... end of loop on parts ... !
+
+        ! areas modulo:
+        do k = 1,nvisited
+            i = list_index(1,k)
+            j = list_index(2,k)
+            do while (polygon_area(i,j) < 0)
+                polygon_area(i,j) = polygon_area(i,j) + grid_area(i,j)
+            end do
+            do while (polygon_area(i,j) > grid_area(i,j))
+                polygon_area(i,j) = polygon_area(i,j) - grid_area(i,j)
+            end do
+        end do
+
+        ! fill polygon interior:
+        call fill_polygon_interior( polygon_area, list_index, list_border )
+
+
+        if (.not. split_records) then
+            key = get_field_key(ishp)
+            polygon_area_0(key) = polygon_area_0(key) + polygon_area
+
+        else
+
+
+            !========================================= PRINTING: ==========================================!
+
+            if (check) then
+                if (output_files(ifile) is '.record()') then
+                    print *, SHP.record(ishp)(0)
+                else
+                    print *, output_files(ifile)
+                end if
+                print *, 'total area (m2): ',polygon_area.sum()
+                print *, 'minimum area ratio:',minval(polygon_area/grid_area)
+                print *, 'maximum area ratio:',maxval(polygon_area/grid_area)
+            end if
+
+
+            !========================================= RECORDING: =========================================!
+
+
+            out = open( outname , mode='w' )
+
+            ! write header:
+            out.write('ncols         '+str(nx)+'\n')
+            out.write('nrows         '+str(ny)+'\n')
+            out.write('xllcorner     '+str(xbounds(0))+'\n')
+            out.write('yllcorner     '+str(ybounds(0))+'\n')
+            if (dlon==dlat) then
+                out.write('cellsize      '+str(dlon)+'\n')
+            else
+                out.write('cellsize      '+str(dlon)+','+str(dlat)+'\n')
+            end if
+            out.write('NODATA_value  -1.\n')
+
+            ! write data:
+            do j = ny,1,-1
+                do i 1,nx
+                    out.write(str(polygon_area(i,j)))
+                    out.write(' ')
+                end do
+                out.write('\n')
+            end do
+
+            out.close()
+
+
+            !==============================================================================================!
+
+
+
+    end do
+    ! -- end of loop on records -- !
+
+
+
+
+    if (.not. split_records) then
+
+        polygon_area = polygon_area_0
+
+
+        !========================================= RECORDING: =========================================!
+
+
+        do key in field_values:
+
+            if (output_files(ifile) is '.record()') then
+                outname = output_dir + def_name + '_' + key + '.grd'
+            else
+                outname = output_dir + output_files(ifile) + '_' + key + '.grd'
+            end if
+
+            out = open( outname , mode='w' )
+
+            ! write header:
+            out.write('ncols         '+str(nx)+'\n')
+            out.write('nrows         '+str(ny)+'\n')
+            out.write('xllcorner     '+str(xbounds(0))+'\n')
+            out.write('yllcorner     '+str(ybounds(0))+'\n')
+            if (dlon==dlat) then
+                out.write('cellsize      '+str(dlon)+'\n')
+            else
+                out.write('cellsize      '+str(dlon)+','+str(dlat)+'\n')
+            end if
+            out.write('NODATA_value  -1.\n')
+
+            ! write data:
+            do j = ny,1,-1
+                do i = 1,nx
+                    out.write(str(polygon_area(key)(i,j)))
+                    out.write(' ')
+                end do
+                out.write('\n')
+            end do
+
+            out.close()
+
+
+            !========================================== SHOWING ===========================================!
+
+            if (check) then
+                print *, '--------------------------------------------------'
+                print *, outname
+                print *, 'total area (m2): ',polygon_area(key).sum()
+                print *, 'minimum area ratio:',minval(polygon_area(key)/grid_area)
+                print *, 'maximum area ratio:',maxval(polygon_area(key)/grid_area)
+            end if
+
+
+        end do
+
+
+    end if
+
+
+
+
+
+print *, 'number of basins:',ifile
+
+
+
+
+end program
+

@@ -1,0 +1,176 @@
+﻿SYNOPSIS
+
+     ./shp2grid input_file -o output_file
+         [-s nx,ny | -r dx,dy | -m grid_file,xvar,yvar | -m grid_file,xvar,yvar,xbndvar,ybndvar]
+         [--bbox x0,y0,x1,y1 | -g] [-f]
+         [[--earth-model datum | --earth-flattening f --earth-radius r]]
+         [--check] [--check-tot-area] [--check-rec-area] [--protect-adjacent]
+         [--split-records] [--split-computation] [--tolerance x] [--help]
+
+
+EXAMPLES
+
+     ./shp2grid input.shp -o output.nc -s 10,5 --bbox -90.,-60.,90.,60.
+     ./shp2grid input.shp -o output.nc -r 3.75,1.9 -g --bbox 0,,360,
+     ./shp2grid input.shp -o output.nc -m grid.nc,lon,lat,lon_bnds,lat_bnds
+     ./shp2grid input.shp -o output.nc -s 96 -g -f
+
+
+DESCRIPTION
+
+    Rasterize a polygon-type shapefile on a rectilinear longitude-latitude grid
+    with the following method: for each cell the of grid, the code computes and
+    sum the areas of all the portions of polygons that fall within the cell
+    (i.e., the "common area" between the cell and the polygons). The cells that
+    are entirely within a polygon are attributed a "polygon area" of 100% of
+    their area.
+
+    Generates a netCDF file containing the following variables:
+    * "longitude" (size-{nx}), "latitude" (size-{ny}): coordinates of the
+      centers of grid cells
+    * "longitude_bounds" (size-{nx,2}), "latitude_bounds" (size-{ny,2}):
+      coordinates of the bounds of each grid cell)
+    * "grid_area" (size-{nx,ny}): area of each cell of the grid
+    * "polygon_area" (or "polygon_fraction", size-{nx,ny}): area (or area
+      fraction) of polygons within each grid cell
+
+    The grid must be rectilinear (the algorithm cannot handle curvilinear grid),
+    but does not have to be evenly-spaced.
+    The grid is defined by either of the options:
+    * "-s nx,ny --bbox x0,y0,x1,y1"
+    * "-r dx,dy --bbox x0,y0,x1,y1"
+        (in both cases, "--bbox ..." can be replaced by "-g", indicating a
+         global grid)
+    * "-m grid_file,lon,lat" (to match the grid of an existing netCDF file)
+    See below for more details about these arguments.
+
+    The input shapefile must be of type "polygon" (type 5).
+    The data coordinates is assumed to be "native" longitude and latitude, in
+    degrees (i.e., ESPG:4326 "platecarree" projection), although the Earth model
+    can be specified by the user, and does not need to be WGS84. The code does
+    not read the projection file (*.prj), and does not perform any projection,
+    aside from the conversion to authalic latitude.
+    The attribute table (*.dbf) is not read either. Hence, no information from
+    the attribute table can be used to sort or group the data. The only sorting
+    options are to rasterize all shapefile records together, or all individually
+    ("--split-records").
+
+    MANDATORY ARGUMENTS:
+
+    input_file
+            Name (path) of the input shapefile.
+            The extension (e.g., ".shp") is not needed.
+
+    OPTIONAL ARGUMENTS:
+
+    -o output_file_name
+            Name (path) of the output netCDF file.
+            Default: [input_file]_rasterized.nc
+
+    -s|--size nx[,ny]
+            nx: number of grid cells in the "x" (longitude) direction.
+            ny: number of grid cells in the "y" (latitude) direction.
+            If 'ny' is unspecified, consider ny=nx.
+            With this option, an evenly-spaced grid is generated.
+
+    -r|--res dx[,dy]
+            dx: resolution (cell size) in the "x" (longitude) direction.
+            dy: resolution (cell size) in the "y" (latitude) direction.
+            If 'dy' is unspecified, consider dy=dx
+            With this option, an evenly-spaced grid is generated
+
+    -m|--match grid_file,xvar,yvar[,xbndvar,ybndvar]
+            Use the grid of the netCDF file 'grid_file'. The grid is defined by
+            the variables 'xvar' (longitude axis) and 'yvar' (latitude axis) and
+            (optional) variables 'xbndvar' and 'ybndvar', specifying the bounds
+            of the cells in the "x" and "y" directions (respectively).
+            If the size of 'xvar' is {n}, the size of 'xbndvar' must be {n,2} or
+            {2,n}, and similarly for 'yvar'.
+            If 'xbndvar' and 'ybndvar' are not specified, assumes that cell
+            bounds are in the middle between cell centers; and the first and
+            last bounds are taken from the bounding-box argument, or
+            automatically computed.
+
+    --bbox x0,y0,x1,y1
+            Bounding-box of the grid. Values can be skipped by writing empty
+            arguments, e.g., "--box x0,,x1," (to skip 'y0' and 'y1').
+            This option is compatible, but not required, if "--match" or
+            "--global-grid" options are used.
+
+    --use-shp-bbox
+            Use the bounding-box of the input shapefile as grid's bounding-box.
+            This option is not compatible with "--global-grid" option.
+
+    -g|--global-grid
+            Indicate that the grid must cover the entire Earth. The latitude
+            bounds are then set to [-90, 90] (ignoring "--bbox" values, if
+            given). The longitude bounds are either taken from "--bbox" values
+            (if given), or determined from the input grid file (if given) -- in
+            both case, enforcing that x1=x0+360 -- or set to default values:
+            [-180, 180].
+            With "global-grid" option, the input longitude data is automatically
+            repositioned within the longitude range of the grid. I.e., a
+            shapefile with longitude values in [0, 360] will be automatically
+            put in the [-180, 180] longitude range of the grid.
+            This behaviour only works with "--global-grid" option, nonetheless,
+            if the grid's bounding-box satisfies the conditions (latitude bounds
+            are [-90, 90] and longitude range is 360-wide), the "global-grid"
+            behaviour is automatically activated.
+
+    -f|--fraction
+            Indicate to output the area fraction of grid cells covered by the
+            shapefile's polygons, instead of the absolute area. The output
+            variable is therefore "polygon_fraction" instead of "polygon_area".
+
+    --earth-model datum
+            Specify which Earth model (datum) should be used to compute areas.
+            Two possibilities for 'datum': "WGS84" or "spherical".
+
+    --earth-flattening f --earth-radius r
+            Alternatively, directly specify the flattening 'f' and the radius
+            (semi-major axis) 'r' of the ellipsoid. These options must be used
+            together.
+
+    --check-tot-area
+            Compute and display the total area of the shapefile's polygons and
+            the summed area of the generated netCDF file, to verify that they
+            are identical.
+
+    --check-rec-area
+            Similar to "--check-tot-area" for every record of the shapefile.
+            This is only possible with "--split-records", or
+            "--split-computation" options.
+
+    --check
+            Shortcut for both "--check-tot-area" and "--check-rec-area".
+
+    --protect-adjacent-polygons
+            Process independently, for each shapefile record, the part of the
+            computation determining the connections between "visited" grid cells
+            The default behaviour, which is to process it once and for all, is
+            more efficient, but WILL NOT WORK if there are adjacent polygons.
+
+    --split-records
+            Rasterizes every shapefile records individually, and generate one
+            output raster per record. The output netCDF variable ("polygon_area"
+            or "polygon_fraction") will then have a 3rd dimension: "record".
+
+    --split-computation
+            Rasterizes every shapefile records individually (as with
+            "--split-records" option), but, at the end of the process, sum all
+            the area (fraction) fields and output a single, summed, field.
+            This method is much less efficient than processing all the records
+            together (the default behaviour).
+
+    --tolerance x
+            Specify the minimum difference 'x' to determine whether a segment
+            crossed a "x" cell edge or and "y" cell edge first.
+
+    --help
+            Display current help message.
+
+
+AUTHOR
+
+    Pierre Maffre
+
