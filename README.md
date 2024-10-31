@@ -9,11 +9,11 @@ There are two Fortran main programs in current repository:
 * test\_read\_shapefile.f90:  a simple script to test the shapefile reading functions
 
 The main programs use the following modules:
-* shapefile\_io\_module.f90:     central module, to read shapefile data (\*.shp and \*.shx files)
-* netcdf\_output.f90:           contains subroutine to generate and write netCDF outputs
-* scan\_arguments.f90:          subroutine for analyzing command-line arguments passed to the main program
-* geography.f90:               geographic tools: Earth model, radius, and authalic latitude
-* miscellaneous\_functions.f90: various tools: modify file names, time string, etc.
+* shapefile\_io\_module.f90:	central module, to read shapefile data (\*.shp and \*.shx files)
+* netcdf\_output.f90:		contains subroutine to generate and write netCDF outputs
+* scan\_arguments.f90:		subroutine for analyzing command-line arguments passed to the main program
+* geography.f90:		geographic tools: Earth model, radius, and authalic latitude
+* miscellaneous\_functions.f90:	various tools: modify file names, time string, etc.
 
 ### Other subrepertories
 * backups/:      backup of old or incomplete code
@@ -56,6 +56,6 @@ Shapefiles example in subrepertory data\_example/ are taken from database:
 Global Self-consistent Hierarchical High-resolution Geography, GSHHG  
 Version 2.3.7 June 15, 2017  
 Distributed under the Lesser GNU Public License  
-Credit: Paul Wessel (primary contact: pwessel@hawaii.edu), Walter H. F. Smith
+Credit: Paul Wessel (primary contact: pwessel@hawaii.edu), Walter H. F. Smith  
 Url: http://www.soest.hawaii.edu/pwessel/gshhg/
 
